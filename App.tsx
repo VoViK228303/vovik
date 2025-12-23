@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Stock, OrderType, Transaction, MarketStatus, User } from './types';
-import { AppHeader } from './components/AppHeader';
+import { TopNavigation } from './components/TopNavigation';
 import { StockTable } from './components/StockTable';
 import { TradingPanel } from './components/TradingPanel';
 import { MarketAnalyst } from './components/MarketAnalyst';
@@ -253,7 +253,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen pb-12">
-      <AppHeader 
+      <TopNavigation 
         portfolio={currentUser.portfolio} 
         stocks={stocks} 
         onOpenSettings={() => setIsSettingsOpen(true)}

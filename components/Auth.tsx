@@ -1,7 +1,9 @@
+
 import React, { useState } from 'react';
 import { UserState } from '../types.ts';
 import { INITIAL_CASH } from '../constants.ts';
 import { Lock, User, UserPlus, LogIn } from 'lucide-react';
+import { supabase } from '../lib/supabase.ts';
 
 interface AuthProps {
   onLogin: (user: UserState) => void;
@@ -9,90 +11,97 @@ interface AuthProps {
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState(''); // Supabase prefers email or username + domain
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
-    if (!username || !password) {
+    if (!password || (isLogin ? !username : (!username || !email))) {
       setError('Заполните все поля');
+      setLoading(false);
       return;
     }
 
-    const usersStr = localStorage.getItem('tradeSimUsers');
-    const users: Record<string, any> = usersStr ? JSON.parse(usersStr) : {};
+    try {
+      if (isLogin) {
+        // We use email-like login for Supabase auth
+        const loginEmail = username.includes('@') ? username : `${username}@tradesim.local`;
+        const { data, error: authError } = await supabase.auth.signInWithPassword({
+          email: loginEmail,
+          password: password,
+        });
 
-    if (isLogin) {
-      // Специальная проверка для Админов (Hardcoded credentials)
-      // Если введены верные данные админа, мы пускаем его, даже если аккаунта нет в базе (создаем его на лету)
-      if ((username === 'Armen_LEV' && password === 'bot228303') || 
-          (username === 'admin' && password === 'armen2009')) {
-          
-          let adminUser = users[username];
-          
-          // Если это первый вход админа, создаем ему профиль
-          if (!adminUser) {
-             const adminState: UserState = {
-                username,
-                cash: INITIAL_CASH, // Админы начинают с той же суммой, но могут накрутить себе через панель
-                holdings: [],
-                transactions: [],
-                initialCash: INITIAL_CASH,
-                isBanned: false
-             };
-             adminUser = { password, state: adminState };
-             users[username] = adminUser;
-             localStorage.setItem('tradeSimUsers', JSON.stringify(users));
-          }
+        if (authError) throw authError;
 
-          onLogin(adminUser.state);
-          return;
-      }
+        // Fetch user profile from public.profiles table
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
 
-      // Обычный вход для пользователей
-      const user = users[username];
-      if (user && user.password === password) {
-        if (user.state.isBanned) {
-          setError('ЭТОТ АККАУНТ ЗАБЛОКИРОВАН АДМИНИСТРАЦИЕЙ');
-          return;
+        if (profileError) throw profileError;
+        if (profile.is_banned) {
+          await supabase.auth.signOut();
+          throw new Error('АККАУНТ ЗАБЛОКИРОВАН');
         }
-        onLogin(user.state);
+
+        // Fetch holdings
+        const { data: holdings } = await supabase
+          .from('holdings')
+          .select('*')
+          .eq('user_id', data.user.id);
+
+        onLogin({
+          username: profile.username,
+          cash: profile.cash,
+          initialCash: profile.initial_cash,
+          holdings: holdings || [],
+          transactions: [], // Transactions could be fetched from a separate table later
+          isBanned: profile.is_banned
+        });
+
       } else {
-        setError('Неверное имя пользователя или пароль');
+        // Sign up
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: email,
+          password: password,
+          options: {
+            data: { username: username }
+          }
+        });
+
+        if (signUpError) throw signUpError;
+        if (!data.user) throw new Error('Ошибка регистрации');
+
+        // Create profile in profiles table (Trigger should ideally handle this, but we do it manually for simplicity)
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([
+            { id: data.user.id, username: username, cash: INITIAL_CASH, initial_cash: INITIAL_CASH }
+          ]);
+
+        if (profileError) throw profileError;
+
+        onLogin({
+          username: username,
+          cash: INITIAL_CASH,
+          initialCash: INITIAL_CASH,
+          holdings: [],
+          transactions: [],
+          isBanned: false
+        });
       }
-    } else {
-      if (users[username]) {
-        setError('Пользователь с таким именем уже существует');
-        return;
-      }
-
-      // Запрет на регистрацию никнеймов админов обычным путем
-      if (username.toLowerCase() === 'admin' || username.toLowerCase() === 'armen_lev') {
-         setError('Это имя пользователя недоступно для регистрации');
-         return;
-      }
-
-      const newUserState: UserState = {
-        username,
-        cash: INITIAL_CASH,
-        holdings: [],
-        transactions: [],
-        initialCash: INITIAL_CASH,
-        isBanned: false
-      };
-
-      // Save user wrapper with password
-      const newUser = {
-        password,
-        state: newUserState
-      };
-
-      users[username] = newUser;
-      localStorage.setItem('tradeSimUsers', JSON.stringify(users));
-      onLogin(newUserState);
+    } catch (err: any) {
+      setError(err.message || 'Произошла ошибка');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -106,8 +115,21 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
         <div className="p-8">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {!isLogin && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="email@example.com"
+                />
+              </div>
+            )}
+            
             <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Имя пользователя</label>
+              <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Никнейм</label>
               <div className="relative">
                 <User className="absolute left-3 top-3 text-gray-400" size={18} />
                 <input
@@ -142,9 +164,10 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
             <button
               type="submit"
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg shadow-blue-200 dark:shadow-blue-900/20 transition-all flex items-center justify-center gap-2"
+              disabled={loading}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-lg shadow-blue-200 dark:shadow-blue-900/20 transition-all flex items-center justify-center gap-2"
             >
-              {isLogin ? <><LogIn size={18} /> Войти</> : <><UserPlus size={18} /> Создать аккаунт</>}
+              {loading ? 'Загрузка...' : isLogin ? <><LogIn size={18} /> Войти</> : <><UserPlus size={18} /> Создать аккаунт</>}
             </button>
           </form>
 

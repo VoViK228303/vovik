@@ -1,13 +1,14 @@
+
 export interface Stock {
   symbol: string;
   name: string;
   price: number;
-  change: number; // Value amount
-  changePercent: number; // Percentage
+  change: number;
+  changePercent: number;
   volume: number;
   high: number;
   low: number;
-  volatility: number; // Volatility factor (e.g., 0.02 for 2%)
+  volatility: number;
 }
 
 export interface PortfolioItem {
@@ -18,10 +19,10 @@ export interface PortfolioItem {
 
 export interface Transaction {
   id: string;
-  type: 'BUY' | 'SELL' | 'TRANSFER_OUT' | 'TRANSFER_IN';
-  symbol: string; // For transfers, this might be 'CASH' or the other username
-  price: number; // For transfers, 1
-  quantity: number; // Amount
+  type: 'BUY' | 'SELL' | 'TRANSFER_OUT' | 'TRANSFER_IN' | 'P2P_BUY' | 'P2P_SELL';
+  symbol: string;
+  price: number;
+  quantity: number;
   timestamp: number;
 }
 
@@ -31,23 +32,29 @@ export interface UserState {
   holdings: PortfolioItem[];
   transactions: Transaction[];
   initialCash: number;
-  isBanned?: boolean; // New field for ban status
+  isBanned?: boolean;
 }
 
-export interface MarketState {
-  isOpen: boolean;
-  lastUpdate: number;
+export interface Message {
+  id: string;
+  username: string;
+  text: string;
+  created_at: string;
+}
+
+export interface P2POrder {
+  id: string;
+  seller_id: string;
+  seller_name: string;
+  symbol: string;
+  quantity: number;
+  price: number;
+  created_at: string;
 }
 
 export enum Theme {
   LIGHT = 'light',
   DARK = 'dark',
-}
-
-export interface AIAnalysisResult {
-  summary: string;
-  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  advice: string;
 }
 
 export interface NewsItem {

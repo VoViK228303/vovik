@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
-import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy } from 'lucide-react';
+import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy, ShoppingCart, MessageSquare, Network } from 'lucide-react';
 import { Stock, UserState, Theme, NewsItem } from './types.ts';
 import { INITIAL_STOCKS, INITIAL_NEWS } from './constants.ts';
 import { StockTable } from './components/StockTable.tsx';
@@ -13,6 +14,8 @@ import { NewsFeed } from './components/NewsFeed.tsx';
 import { PortfolioDistribution } from './components/PortfolioDistribution.tsx';
 import { Casino } from './components/Casino.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
+import { P2PMarket } from './components/P2PMarket.tsx';
+import { GlobalChat } from './components/GlobalChat.tsx';
 import { supabase } from './lib/supabase.ts';
 
 const checkIsAdmin = (username: string) => {
@@ -28,11 +31,12 @@ export default function App() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showCasino, setShowCasino] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showP2P, setShowP2P] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   
   const [stocks, setStocks] = useState<Stock[]>(INITIAL_STOCKS);
   const [news, setNews] = useState<NewsItem[]>(INITIAL_NEWS);
   const [selectedStockSymbol, setSelectedStockSymbol] = useState<string | null>(INITIAL_STOCKS[0].symbol);
-  const [showSettings, setShowSettings] = useState(false);
 
   const selectedStock = stocks.find(s => s.symbol === selectedStockSymbol) || null;
   const isAdmin = currentUser ? checkIsAdmin(currentUser.username) : false;
@@ -42,79 +46,34 @@ export default function App() {
     return acc + (item.quantity * (stock?.price || 0));
   }, 0) : 0;
 
-  const getHoldingsForStock = (symbol: string) => {
-    return currentUser?.holdings.find(h => h.symbol === symbol)?.quantity || 0;
-  };
+  const refreshUserData = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
+      const { data: holdings } = await supabase.from('holdings').select('*').eq('user_id', session.user.id);
 
-  // Sync user profile to Supabase
+      if (profile) {
+        setCurrentUser({
+          username: profile.username,
+          cash: profile.cash,
+          initialCash: profile.initial_cash,
+          holdings: holdings || [],
+          transactions: [],
+          isBanned: profile.is_banned
+        });
+      }
+    }
+  }, []);
+
   const syncUserToDB = useCallback(async (user: UserState) => {
     const { data: authUser } = await supabase.auth.getUser();
     if (!authUser.user) return;
-
-    // Update profiles table (cash)
-    await supabase
-      .from('profiles')
-      .update({ cash: user.cash })
-      .eq('id', authUser.user.id);
-
-    // Update holdings table (Syncing holdings is more complex, usually we'd clear and re-insert or upsert)
-    // For simplicity, we assume the backend handles transactions, but here we do a basic sync:
-    for (const holding of user.holdings) {
-      await supabase
-        .from('holdings')
-        .upsert({ 
-          user_id: authUser.user.id, 
-          symbol: holding.symbol, 
-          quantity: holding.quantity, 
-          avg_cost: holding.avgCost 
-        }, { onConflict: 'user_id,symbol' });
-    }
-    
-    // Remove holdings with 0 quantity from DB if any (basic cleanup)
-    const activeSymbols = user.holdings.map(h => h.symbol);
-    if (activeSymbols.length > 0) {
-      await supabase
-        .from('holdings')
-        .delete()
-        .eq('user_id', authUser.user.id)
-        .not('symbol', 'in', `(${activeSymbols.join(',')})`);
-    } else {
-      await supabase
-        .from('holdings')
-        .delete()
-        .eq('user_id', authUser.user.id);
-    }
+    await supabase.from('profiles').update({ cash: user.cash }).eq('id', authUser.user.id);
   }, []);
 
   useEffect(() => {
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        const { data: holdings } = await supabase
-          .from('holdings')
-          .select('*')
-          .eq('user_id', session.user.id);
-
-        if (profile) {
-          setCurrentUser({
-            username: profile.username,
-            cash: profile.cash,
-            initialCash: profile.initial_cash,
-            holdings: holdings || [],
-            transactions: [],
-            isBanned: profile.is_banned
-          });
-        }
-      }
-    };
-    checkSession();
-  }, []);
+    refreshUserData();
+  }, [refreshUserData]);
 
   useEffect(() => {
     if (theme === Theme.DARK) document.documentElement.classList.add('dark');
@@ -142,184 +101,138 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isMarketOpen]);
 
-  const handleLogin = (user: UserState) => {
-    setCurrentUser(user);
-  };
+  const handleTrade = async (type: 'BUY' | 'SELL', quantity: number) => {
+    if (!selectedStock || !currentUser) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const cost = quantity * selectedStock.price;
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setCurrentUser(null);
-    setShowProfile(false);
-    setShowAdminPanel(false);
-    setShowCasino(false);
-    setShowLeaderboard(false);
-  };
-
-  const handleCasinoUpdate = async (amount: number) => {
-    if (!currentUser) return;
-    const updatedUser = {
-      ...currentUser,
-      cash: currentUser.cash + amount,
-    };
-    setCurrentUser(updatedUser);
-    await syncUserToDB(updatedUser);
+    if (type === 'BUY') {
+      if (currentUser.cash < cost) return;
+      const existing = currentUser.holdings.find(h => h.symbol === selectedStock.symbol);
+      await supabase.from('holdings').upsert({ 
+        user_id: session?.user.id, 
+        symbol: selectedStock.symbol, 
+        quantity: (existing?.quantity || 0) + quantity,
+        avg_cost: selectedStock.price
+      }, { onConflict: 'user_id,symbol' });
+      await supabase.from('profiles').update({ cash: currentUser.cash - cost }).eq('id', session?.user.id);
+    } else {
+      const existing = currentUser.holdings.find(h => h.symbol === selectedStock.symbol);
+      if (!existing || existing.quantity < quantity) return;
+      await supabase.from('holdings').upsert({ 
+        user_id: session?.user.id, 
+        symbol: selectedStock.symbol, 
+        quantity: existing.quantity - quantity 
+      }, { onConflict: 'user_id,symbol' });
+      await supabase.from('profiles').update({ cash: currentUser.cash + cost }).eq('id', session?.user.id);
+    }
+    refreshUserData();
   };
 
   const handleTransfer = async (recipientUsername: string, amount: number): Promise<{ success: boolean, message: string }> => {
     if (!currentUser) return { success: false, message: 'Не авторизован' };
     if (currentUser.cash < amount) return { success: false, message: 'Недостаточно средств' };
-
-    // Real DB Transfer
-    const { data: recipientProfile, error: findError } = await supabase
-      .from('profiles')
-      .select('id, cash')
-      .eq('username', recipientUsername)
-      .single();
-
-    if (findError || !recipientProfile) return { success: false, message: 'Пользователь не найден' };
-
-    // 1. Deduct from sender
-    const { error: deductError } = await supabase
-      .from('profiles')
-      .update({ cash: currentUser.cash - amount })
-      .eq('username', currentUser.username);
-
-    if (deductError) return { success: false, message: 'Ошибка при списании' };
-
-    // 2. Add to recipient
-    await supabase
-      .from('profiles')
-      .update({ cash: recipientProfile.cash + amount })
-      .eq('id', recipientProfile.id);
-
-    const updatedUser = { ...currentUser, cash: currentUser.cash - amount };
-    setCurrentUser(updatedUser);
-    
-    return { success: true, message: 'Перевод выполнен успешно' };
+    const { data: recipientProfile } = await supabase.from('profiles').select('id, cash').eq('username', recipientUsername).single();
+    if (!recipientProfile) return { success: false, message: 'Пользователь не найден' };
+    const { data: { session } } = await supabase.auth.getSession();
+    await supabase.from('profiles').update({ cash: currentUser.cash - amount }).eq('id', session?.user.id);
+    await supabase.from('profiles').update({ cash: recipientProfile.cash + amount }).eq('id', recipientProfile.id);
+    refreshUserData();
+    return { success: true, message: 'Успешно переведено!' };
   };
 
-  const handleTrade = async (type: 'BUY' | 'SELL', quantity: number) => {
-    if (!selectedStock || !currentUser) return;
-    const cost = quantity * selectedStock.price;
-    let updatedUser: UserState | null = null;
-
-    if (type === 'BUY') {
-      if (currentUser.cash < cost) return;
-      const existing = currentUser.holdings.find(h => h.symbol === selectedStock.symbol);
-      const newHoldings = existing 
-        ? currentUser.holdings.map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity + quantity } : h)
-        : [...currentUser.holdings, { symbol: selectedStock.symbol, quantity, avgCost: selectedStock.price }];
-      
-      updatedUser = {
-        ...currentUser,
-        cash: currentUser.cash - cost,
-        holdings: newHoldings
-      };
-    } else {
-      const currentQty = getHoldingsForStock(selectedStock.symbol);
-      if (currentQty < quantity) return;
-      const newHoldings = currentUser.holdings
-        .map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity - quantity } : h)
-        .filter(h => h.quantity > 0);
-      
-      updatedUser = {
-        ...currentUser,
-        cash: currentUser.cash + cost,
-        holdings: newHoldings
-      };
-    }
-
-    if (updatedUser) {
-      setCurrentUser(updatedUser);
-      await syncUserToDB(updatedUser);
-    }
-  };
-
-  const handleManipulateStock = (symbol: string, percentChange: number) => {
-    setStocks(prev => prev.map(s => {
-      if (s.symbol === symbol) {
-        const newPrice = s.price * (1 + percentChange / 100);
-        return { ...s, price: newPrice, change: newPrice - (s.price - s.change), changePercent: percentChange + s.changePercent };
-      }
-      return s;
-    }));
-  };
-  
-  const handleUpdateVolatility = (symbol: string, volatility: number) => {
-     setStocks(prev => prev.map(s => s.symbol === symbol ? { ...s, volatility } : s ));
-  };
-
-  const handleAddStock = (stock: Stock) => {
-    if (stocks.length >= 15) return;
-    setStocks(prev => [...prev, stock]);
-  };
-
-  const handleRemoveStock = (symbol: string) => {
-    setStocks(prev => prev.filter(s => s.symbol !== symbol));
-    if (selectedStockSymbol === symbol) setSelectedStockSymbol(null);
-  };
-
-  const handlePublishNews = (title: string, type: 'INFO' | 'BULLISH' | 'BEARISH') => {
-    const newItem: NewsItem = { id: Date.now().toString(), title, type, timestamp: Date.now() };
-    setNews(prev => [newItem, ...prev]);
-  };
-
-  if (!currentUser) return <Auth onLogin={handleLogin} />;
+  if (!currentUser) return <Auth onLogin={setCurrentUser} />;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 pb-20">
-      <header className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-100 dark:border-gray-700 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">T</div>
-            <h1 className="text-xl font-bold tracking-tight">TradeSim <span className="text-blue-600 font-light">AI</span></h1>
+    <div className="min-h-screen pb-20 dark:bg-black bg-gray-50 transition-colors duration-500">
+      <nav className="sticky top-0 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-100 dark:border-gray-800 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 group">
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20 group-hover:rotate-12 transition-transform">
+              <Network size={22} />
+            </div>
+            <div>
+              <h1 className="text-xl font-black italic tracking-tighter dark:text-white flex items-center gap-1">
+                TRADESIM <span className="text-blue-600">P2P</span>
+              </h1>
+              <div className="flex items-center gap-1">
+                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                 <span className="text-[8px] font-bold text-gray-400 uppercase tracking-widest">Multiplayer Active</span>
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
-             {isAdmin && (
-               <button onClick={() => setShowAdminPanel(true)} className="p-2 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full hover:bg-red-200" title="Админ Панель"><ShieldAlert size={20} /></button>
-             )}
-             <button onClick={() => setShowCasino(true)} className="p-2 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 rounded-full flex items-center gap-2 px-3" title="Казино"><Dices size={20} /><span className="hidden sm:inline font-bold text-xs uppercase">Casino</span></button>
-             <button onClick={() => setShowLeaderboard(true)} className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-full flex items-center gap-2 px-3" title="Лидерборд"><Trophy size={20} /><span className="hidden sm:inline font-bold text-xs uppercase text-[10px]">Leaderboard</span></button>
-             <div className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold ${isMarketOpen ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-rose-100 text-rose-800'}`}><span className={`w-2 h-2 rounded-full ${isMarketOpen ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>{isMarketOpen ? 'LIVE' : 'CLOSED'}</div>
-             <button onClick={() => setShowProfile(true)} className="p-2 bg-gray-100 dark:bg-gray-700 rounded-full text-gray-600 dark:text-gray-300" title="Профиль"><UserIcon size={20} /></button>
-             <button onClick={() => setShowSettings(!showSettings)} className="p-2 text-gray-500 hover:text-gray-900 transition-colors"><Settings size={20} /></button>
+
+          <div className="flex items-center gap-3">
+             <button 
+                onClick={() => setShowP2P(true)}
+                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-indigo-500 rounded-xl hover:scale-105 transition-all relative"
+                title="P2P Market"
+              >
+                <ShoppingCart size={20} />
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[8px] text-white flex items-center justify-center rounded-full font-bold">LIVE</span>
+              </button>
+             <button 
+                onClick={() => setShowChat(true)}
+                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-blue-500 rounded-xl hover:scale-105 transition-all"
+                title="Global Chat"
+              >
+                <MessageSquare size={20} />
+              </button>
+            <button 
+              onClick={() => setTheme(theme === Theme.LIGHT ? Theme.DARK : Theme.LIGHT)}
+              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-xl hover:rotate-12 transition-all"
+            >
+              {theme === Theme.LIGHT ? <Moon size={20} /> : <Sun size={20} />}
+            </button>
+            <button 
+              onClick={() => setShowLeaderboard(true)}
+              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-yellow-500 rounded-xl hover:scale-105 transition-all"
+            >
+              <Trophy size={20} />
+            </button>
+            <div className="h-8 w-[1px] bg-gray-200 dark:bg-gray-700 mx-1" />
+            <button 
+              onClick={() => setShowProfile(true)}
+              className="flex items-center gap-2 pl-2 pr-4 py-1.5 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-800/50 hover:bg-blue-100 transition-colors"
+            >
+              <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center text-white text-xs font-bold">
+                {currentUser.username.charAt(0).toUpperCase()}
+              </div>
+              <span className="text-sm font-bold text-blue-700 dark:text-blue-300 hidden sm:block">{currentUser.username}</span>
+            </button>
           </div>
         </div>
-      </header>
+      </nav>
 
-      {showSettings && (
-        <div className="absolute top-16 right-4 sm:right-8 z-40 w-64 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 p-4 animate-in fade-in slide-in-from-top-2">
-           <div className="space-y-2">
-             <button onClick={() => setTheme(theme === Theme.LIGHT ? Theme.DARK : Theme.LIGHT)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm"><span className="flex items-center gap-2">{theme === Theme.LIGHT ? <Moon size={16} /> : <Sun size={16} />} {theme === Theme.LIGHT ? 'Тёмная тема' : 'Светлая тема'}</span></button>
-             <button onClick={() => setIsMarketOpen(!isMarketOpen)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm"><span className="flex items-center gap-2">{isMarketOpen ? <PauseCircle size={16} /> : <PlayCircle size={16} />} {isMarketOpen ? 'Пауза' : 'Возобновить'}</span></button>
-             <div className="h-px bg-gray-100 dark:bg-gray-700 my-2"></div>
-             <button onClick={handleLogout} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-rose-50 text-rose-600 transition-colors text-sm"><LogOut size={16} /> Выйти</button>
-           </div>
-        </div>
-      )}
-
-      {showProfile && <Profile user={currentUser} onClose={() => setShowProfile(false)} onLogout={handleLogout} onTransfer={handleTransfer} />}
-      {showAdminPanel && isAdmin && <AdminPanel onClose={() => setShowAdminPanel(false)} stocks={stocks} onManipulateStock={handleManipulateStock} onUpdateVolatility={handleUpdateVolatility} onPublishNews={handlePublishNews} onAddStock={handleAddStock} onRemoveStock={handleRemoveStock} />}
-      {showCasino && currentUser && <Casino onClose={() => setShowCasino(false)} user={currentUser} onUpdateCash={handleCasinoUpdate} />}
-      {showLeaderboard && currentUser && <Leaderboard onClose={() => setShowLeaderboard(false)} stocks={stocks} currentUser={currentUser} />}
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 py-8">
         <PortfolioSummary userState={currentUser} currentEquity={currentEquity} />
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-           <div className="lg:col-span-2 h-64"><NewsFeed news={news} /></div>
-           <div className="lg:col-span-1 h-64"><PortfolioDistribution holdings={currentUser.holdings} stocks={stocks} cash={currentUser.cash} /></div>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-4">
-             <div className="flex justify-between items-center"><h2 className="text-lg font-bold text-gray-900 dark:text-white">Котировки</h2><span className="text-xs text-gray-500">Симуляция рынка РФ</span></div>
-             <StockTable stocks={stocks} onSelectStock={(s) => setSelectedStockSymbol(s.symbol)} selectedStockSymbol={selectedStockSymbol || undefined} />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-8 space-y-8">
+            <StockTable stocks={stocks} onSelectStock={(s) => setSelectedStockSymbol(s.symbol)} selectedStockSymbol={selectedStockSymbol || undefined} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+               <PortfolioDistribution holdings={currentUser.holdings} stocks={stocks} cash={currentUser.cash} />
+               <NewsFeed news={news} />
+            </div>
           </div>
-          <div className="lg:col-span-1 h-[600px] lg:h-auto lg:sticky lg:top-24">
-            <TradingPanel selectedStock={selectedStock} maxAffordable={selectedStock ? Math.floor(currentUser.cash / selectedStock.price) : 0} maxSellable={selectedStock ? getHoldingsForStock(selectedStock.symbol) : 0} onTrade={handleTrade} isMarketOpen={isMarketOpen} />
+          <div className="lg:col-span-4">
+            <TradingPanel selectedStock={selectedStock} maxAffordable={Math.floor(currentUser.cash / (selectedStock?.price || 1))} maxSellable={currentUser.holdings.find(h => h.symbol === selectedStockSymbol)?.quantity || 0} onTrade={handleTrade} isMarketOpen={isMarketOpen} />
           </div>
         </div>
       </main>
-      <AIAnalyst stocks={stocks} holdings={currentUser.holdings} totalEquity={currentEquity + currentUser.cash} />
+
+      <div className="fixed bottom-6 left-6 flex gap-3 z-50">
+        <button onClick={() => setShowCasino(true)} className="w-14 h-14 bg-yellow-500 text-white rounded-2xl shadow-xl hover:scale-110 transition-all flex items-center justify-center border-4 border-white/20"><Dices size={28} /></button>
+        {isAdmin && <button onClick={() => setShowAdminPanel(true)} className="w-14 h-14 bg-red-600 text-white rounded-2xl shadow-xl hover:scale-110 transition-all flex items-center justify-center border-4 border-white/20"><ShieldAlert size={28} /></button>}
+      </div>
+
+      <AIAnalyst stocks={stocks} holdings={currentUser.holdings} totalEquity={currentUser.cash + currentEquity} />
+
+      {showProfile && <Profile user={currentUser} onClose={() => setShowProfile(false)} onLogout={() => setCurrentUser(null)} onTransfer={handleTransfer} />}
+      {showAdminPanel && <AdminPanel stocks={stocks} onClose={() => setShowAdminPanel(false)} onManipulateStock={() => {}} onUpdateVolatility={() => {}} onPublishNews={() => {}} onAddStock={() => {}} onRemoveStock={() => {}} />}
+      {showCasino && <Casino user={currentUser} onClose={() => setShowCasino(false)} onUpdateCash={(amt) => {}} />}
+      {showLeaderboard && <Leaderboard stocks={stocks} currentUser={currentUser} onClose={() => setShowLeaderboard(false)} />}
+      {showP2P && <P2PMarket user={currentUser} onClose={() => setShowP2P(false)} onRefreshUser={refreshUserData} />}
+      {showChat && <GlobalChat username={currentUser.username} onClose={() => setShowChat(false)} />}
     </div>
   );
 }

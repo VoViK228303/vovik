@@ -1,15 +1,9 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// Используем переменные окружения. Если их нет, ставим пустые строки, 
-// чтобы приложение не падало, но мы могли показать предупреждение в UI.
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
+// Эти переменные должны быть установлены в настройках Vercel (Settings -> Environment Variables)
+// Мы используем заглушки, чтобы предотвратить ошибку "supabaseUrl is required" при первом запуске
+const supabaseUrl = process.env.SUPABASE_URL || 'https://your-project.supabase.co';
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'your-anon-key';
 
-// Проверка: является ли URL валидным (не заглушкой)
-export const isSupabaseConfigured = supabaseUrl !== '' && !supabaseUrl.includes('your-project');
-
-export const supabase = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co', 
-  isSupabaseConfigured ? supabaseAnonKey : 'placeholder'
-);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);

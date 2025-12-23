@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy, ShoppingCart, MessageSquare, Network, Bell } from 'lucide-react';
+import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy, ShoppingCart, MessageSquare, Network, Bell, Wifi, WifiOff } from 'lucide-react';
 import { Stock, UserState, Theme, NewsItem } from './types.ts';
 import { INITIAL_STOCKS, INITIAL_NEWS } from './constants.ts';
 import { StockTable } from './components/StockTable.tsx';
@@ -16,7 +16,7 @@ import { Casino } from './components/Casino.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
 import { P2PMarket } from './components/P2PMarket.tsx';
 import { GlobalChat } from './components/GlobalChat.tsx';
-import { supabase } from './lib/supabase.ts';
+import { supabase, isSupabaseConfigured } from './lib/supabase.ts';
 
 const checkIsAdmin = (username: string) => {
   const admins = ['Armen_LEV', 'admin'];
@@ -48,12 +48,19 @@ export default function App() {
   }, 0) : 0;
 
   const refreshUserData = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
       const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
       const { data: holdings } = await supabase.from('holdings').select('*').eq('user_id', session.user.id);
 
       if (profile) {
+        if (profile.is_banned) {
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          alert('Ваш аккаунт был заблокирован администратором.');
+          return;
+        }
         setCurrentUser({
           username: profile.username,
           cash: profile.cash,
@@ -67,30 +74,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isSupabaseConfigured) return;
     refreshUserData();
 
-    // Глобальная Realtime подписка на события сети
-    const chatChannel = supabase.channel('network-events')
+    const networkChannel = supabase.channel('global-sync')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         if (payload.new.username !== currentUser?.username) {
-           setNotification({ msg: `Новое сообщение от ${payload.new.username}`, type: 'chat' });
+           setNotification({ msg: `Чат: ${payload.new.username} написал сообщение`, type: 'chat' });
         }
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'p2p_market' }, (payload) => {
         if (payload.new.seller_name !== currentUser?.username) {
-           setNotification({ msg: `${payload.new.seller_name} продает ${payload.new.symbol}!`, type: 'p2p' });
+           setNotification({ msg: `Маркет: ${payload.new.seller_name} выставил лот!`, type: 'p2p' });
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
-        // Если изменился наш профиль (кто-то купил у нас или мы купили)
-        const { data: { session } } = supabase.auth.getSession() as any;
-        if (payload.new.id === session?.user?.id) {
-           refreshUserData();
-        }
+        supabase.auth.getSession().then(({data}) => {
+          if (payload.new.id === data.session?.user?.id) refreshUserData();
+        });
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(chatChannel); };
+    return () => { supabase.removeChannel(networkChannel); };
   }, [currentUser?.username, refreshUserData]);
 
   useEffect(() => {
@@ -105,6 +110,7 @@ export default function App() {
     else document.documentElement.classList.remove('dark');
   }, [theme]);
 
+  // Market Simulation
   useEffect(() => {
     if (!isMarketOpen) return;
     const interval = setInterval(() => {
@@ -126,7 +132,7 @@ export default function App() {
   }, [isMarketOpen]);
 
   const handleTrade = async (type: 'BUY' | 'SELL', quantity: number) => {
-    if (!selectedStock || !currentUser) return;
+    if (!selectedStock || !currentUser || !isSupabaseConfigured) return;
     const { data: { session } } = await supabase.auth.getSession();
     const cost = quantity * selectedStock.price;
 
@@ -143,18 +149,19 @@ export default function App() {
     } else {
       const existing = currentUser.holdings.find(h => h.symbol === selectedStock.symbol);
       if (!existing || existing.quantity < quantity) return;
-      await supabase.from('holdings').upsert({ 
-        user_id: session?.user.id, 
-        symbol: selectedStock.symbol, 
-        quantity: existing.quantity - quantity 
-      }, { onConflict: 'user_id,symbol' });
+      const newQty = existing.quantity - quantity;
+      if (newQty === 0) {
+        await supabase.from('holdings').delete().match({ user_id: session?.user.id, symbol: selectedStock.symbol });
+      } else {
+        await supabase.from('holdings').update({ quantity: newQty }).match({ user_id: session?.user.id, symbol: selectedStock.symbol });
+      }
       await supabase.from('profiles').update({ cash: currentUser.cash + cost }).eq('id', session?.user.id);
     }
     refreshUserData();
   };
 
   const handleTransfer = async (recipientUsername: string, amount: number): Promise<{ success: boolean, message: string }> => {
-    if (!currentUser) return { success: false, message: 'Не авторизован' };
+    if (!currentUser || !isSupabaseConfigured) return { success: false, message: 'Сеть недоступна' };
     if (currentUser.cash < amount) return { success: false, message: 'Недостаточно средств' };
     const { data: recipientProfile } = await supabase.from('profiles').select('id, cash').eq('username', recipientUsername).single();
     if (!recipientProfile) return { success: false, message: 'Пользователь не найден' };
@@ -171,7 +178,7 @@ export default function App() {
     <div className="min-h-screen pb-20 dark:bg-black bg-gray-50 transition-colors duration-500">
       {/* Toast Notification */}
       {notification && (
-        <div className="fixed top-20 right-6 z-[60] animate-in slide-in-from-right-full">
+        <div className="fixed top-20 right-6 z-[60] animate-in slide-in-from-right-full duration-300">
            <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl shadow-2xl border text-sm font-bold ${notification.type === 'chat' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-indigo-600 border-indigo-500 text-white'}`}>
              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
                 {notification.type === 'chat' ? <MessageSquare size={16}/> : <ShoppingCart size={16}/>}
@@ -189,11 +196,20 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-black italic tracking-tighter dark:text-white flex items-center gap-1">
-                TRADESIM <span className="text-blue-600">P2P</span>
+                TRADESIM <span className="text-blue-600">PRO</span>
               </h1>
-              <div className="flex items-center gap-1">
-                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                 <span className="text-[8px] font-bold text-gray-400 uppercase tracking-widest">Global Multiplayer</span>
+              <div className="flex items-center gap-1.5">
+                 {isSupabaseConfigured ? (
+                   <>
+                     <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                     <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">Cloud Connected</span>
+                   </>
+                 ) : (
+                   <>
+                     <div className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                     <span className="text-[8px] font-black text-rose-500 uppercase tracking-widest">Local Mode (No Sync)</span>
+                   </>
+                 )}
               </div>
             </div>
           </div>
@@ -201,27 +217,26 @@ export default function App() {
           <div className="flex items-center gap-3">
              <button 
                 onClick={() => setShowP2P(true)}
-                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-indigo-500 rounded-xl hover:scale-105 transition-all relative"
+                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-indigo-500 rounded-xl hover:scale-110 transition-all relative group"
               >
                 <ShoppingCart size={20} />
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[8px] text-white flex items-center justify-center rounded-full font-bold animate-bounce">!</span>
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[8px] text-white flex items-center justify-center rounded-full font-bold">!</span>
               </button>
              <button 
                 onClick={() => setShowChat(true)}
-                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-blue-500 rounded-xl hover:scale-105 transition-all relative"
+                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-blue-500 rounded-xl hover:scale-110 transition-all group"
               >
                 <MessageSquare size={20} />
-                <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-ping"></span>
               </button>
             <button 
               onClick={() => setTheme(theme === Theme.LIGHT ? Theme.DARK : Theme.LIGHT)}
-              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-xl hover:rotate-12 transition-all"
+              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-xl hover:rotate-45 transition-all"
             >
               {theme === Theme.LIGHT ? <Moon size={20} /> : <Sun size={20} />}
             </button>
             <button 
               onClick={() => setShowLeaderboard(true)}
-              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-yellow-500 rounded-xl hover:scale-105 transition-all"
+              className="p-2.5 bg-gray-100 dark:bg-gray-800 text-yellow-500 rounded-xl hover:scale-110 transition-all"
             >
               <Trophy size={20} />
             </button>
@@ -262,9 +277,14 @@ export default function App() {
 
       <AIAnalyst stocks={stocks} holdings={currentUser.holdings} totalEquity={currentUser.cash + currentEquity} />
 
-      {showProfile && <Profile user={currentUser} onClose={() => setShowProfile(false)} onLogout={() => setCurrentUser(null)} onTransfer={handleTransfer} />}
-      {showAdminPanel && <AdminPanel stocks={stocks} onClose={() => setShowAdminPanel(false)} onManipulateStock={() => {}} onUpdateVolatility={() => {}} onPublishNews={() => {}} onAddStock={() => {}} onRemoveStock={() => {}} />}
-      {showCasino && <Casino user={currentUser} onClose={() => setShowCasino(false)} onUpdateCash={(amt) => {}} />}
+      {showProfile && <Profile user={currentUser} onClose={() => setShowProfile(false)} onLogout={async () => { await supabase.auth.signOut(); setCurrentUser(null); }} onTransfer={handleTransfer} />}
+      {showAdminPanel && <AdminPanel stocks={stocks} onClose={() => setShowAdminPanel(false)} onRefreshAll={refreshUserData} />}
+      {showCasino && <Casino user={currentUser} onClose={() => setShowCasino(false)} onUpdateCash={async (amt) => {
+          const newCash = currentUser.cash + amt;
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session) await supabase.from('profiles').update({ cash: newCash }).eq('id', session.user.id);
+          refreshUserData();
+      }} />}
       {showLeaderboard && <Leaderboard stocks={stocks} currentUser={currentUser} onClose={() => setShowLeaderboard(false)} />}
       {showP2P && <P2PMarket user={currentUser} onClose={() => setShowP2P(false)} onRefreshUser={refreshUserData} />}
       {showChat && <GlobalChat username={currentUser.username} onClose={() => setShowChat(false)} />}

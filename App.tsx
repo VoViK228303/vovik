@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy, ShoppingCart, MessageSquare, Network } from 'lucide-react';
+import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy, ShoppingCart, MessageSquare, Network, Bell } from 'lucide-react';
 import { Stock, UserState, Theme, NewsItem } from './types.ts';
 import { INITIAL_STOCKS, INITIAL_NEWS } from './constants.ts';
 import { StockTable } from './components/StockTable.tsx';
@@ -33,6 +33,7 @@ export default function App() {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showP2P, setShowP2P] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [notification, setNotification] = useState<{msg: string, type: 'chat' | 'p2p'} | null>(null);
   
   const [stocks, setStocks] = useState<Stock[]>(INITIAL_STOCKS);
   const [news, setNews] = useState<NewsItem[]>(INITIAL_NEWS);
@@ -65,22 +66,45 @@ export default function App() {
     }
   }, []);
 
-  const syncUserToDB = useCallback(async (user: UserState) => {
-    const { data: authUser } = await supabase.auth.getUser();
-    if (!authUser.user) return;
-    await supabase.from('profiles').update({ cash: user.cash }).eq('id', authUser.user.id);
-  }, []);
-
   useEffect(() => {
     refreshUserData();
-  }, [refreshUserData]);
+
+    // Глобальная Realtime подписка на события сети
+    const chatChannel = supabase.channel('network-events')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+        if (payload.new.username !== currentUser?.username) {
+           setNotification({ msg: `Новое сообщение от ${payload.new.username}`, type: 'chat' });
+        }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'p2p_market' }, (payload) => {
+        if (payload.new.seller_name !== currentUser?.username) {
+           setNotification({ msg: `${payload.new.seller_name} продает ${payload.new.symbol}!`, type: 'p2p' });
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
+        // Если изменился наш профиль (кто-то купил у нас или мы купили)
+        const { data: { session } } = supabase.auth.getSession() as any;
+        if (payload.new.id === session?.user?.id) {
+           refreshUserData();
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(chatChannel); };
+  }, [currentUser?.username, refreshUserData]);
+
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
 
   useEffect(() => {
     if (theme === Theme.DARK) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
   }, [theme]);
 
-  // Market Simulation
   useEffect(() => {
     if (!isMarketOpen) return;
     const interval = setInterval(() => {
@@ -145,6 +169,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen pb-20 dark:bg-black bg-gray-50 transition-colors duration-500">
+      {/* Toast Notification */}
+      {notification && (
+        <div className="fixed top-20 right-6 z-[60] animate-in slide-in-from-right-full">
+           <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl shadow-2xl border text-sm font-bold ${notification.type === 'chat' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-indigo-600 border-indigo-500 text-white'}`}>
+             <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                {notification.type === 'chat' ? <MessageSquare size={16}/> : <ShoppingCart size={16}/>}
+             </div>
+             {notification.msg}
+           </div>
+        </div>
+      )}
+
       <nav className="sticky top-0 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-100 dark:border-gray-800 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 group">
@@ -157,7 +193,7 @@ export default function App() {
               </h1>
               <div className="flex items-center gap-1">
                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                 <span className="text-[8px] font-bold text-gray-400 uppercase tracking-widest">Multiplayer Active</span>
+                 <span className="text-[8px] font-bold text-gray-400 uppercase tracking-widest">Global Multiplayer</span>
               </div>
             </div>
           </div>
@@ -166,17 +202,16 @@ export default function App() {
              <button 
                 onClick={() => setShowP2P(true)}
                 className="p-2.5 bg-gray-100 dark:bg-gray-800 text-indigo-500 rounded-xl hover:scale-105 transition-all relative"
-                title="P2P Market"
               >
                 <ShoppingCart size={20} />
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[8px] text-white flex items-center justify-center rounded-full font-bold">LIVE</span>
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[8px] text-white flex items-center justify-center rounded-full font-bold animate-bounce">!</span>
               </button>
              <button 
                 onClick={() => setShowChat(true)}
-                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-blue-500 rounded-xl hover:scale-105 transition-all"
-                title="Global Chat"
+                className="p-2.5 bg-gray-100 dark:bg-gray-800 text-blue-500 rounded-xl hover:scale-105 transition-all relative"
               >
                 <MessageSquare size={20} />
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-ping"></span>
               </button>
             <button 
               onClick={() => setTheme(theme === Theme.LIGHT ? Theme.DARK : Theme.LIGHT)}

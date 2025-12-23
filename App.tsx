@@ -1,354 +1,490 @@
 import React, { useState, useEffect } from 'react';
-import { Stock, OrderType, Transaction, MarketStatus, User } from './types';
-import { TopNavigation } from './components/TopNavigation';
-import { StockTable } from './components/StockTable';
-import { TradingPanel } from './components/TradingPanel';
-import { MarketAnalyst } from './components/MarketAnalyst';
-import { SettingsModal } from './components/SettingsModal';
-import { AuthScreen } from './components/AuthScreen';
-import { UserProfile } from './components/UserProfile';
-import { AdminPanel } from './components/AdminPanel';
-import { authService } from './services/authService';
+import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy } from 'lucide-react';
+import { Stock, UserState, Theme, NewsItem } from './types.ts';
+import { INITIAL_STOCKS, INITIAL_NEWS } from './constants.ts';
+import { StockTable } from './components/StockTable.tsx';
+import { TradingPanel } from './components/TradingPanel.tsx';
+import { PortfolioSummary } from './components/PortfolioSummary.tsx';
+import { AIAnalyst } from './components/AIAnalyst.tsx';
+import { Auth } from './components/Auth.tsx';
+import { Profile } from './components/Profile.tsx';
+import { AdminPanel } from './components/AdminPanel.tsx';
+import { NewsFeed } from './components/NewsFeed.tsx';
+import { PortfolioDistribution } from './components/PortfolioDistribution.tsx';
+import { Casino } from './components/Casino.tsx';
+import { Leaderboard } from './components/Leaderboard.tsx';
 
-// Initial simulated Russian stocks (Price adjusted for ~1000 RUB balance)
-const INITIAL_STOCKS: Stock[] = [
-  { symbol: 'SBER', name: 'Sberbank', price: 275.50, change: 1.5, changePercent: 0.55 },
-  { symbol: 'GAZP', name: 'Gazprom', price: 164.20, change: -0.8, changePercent: -0.49 },
-  { symbol: 'LKOH', name: 'Lukoil', price: 450.00, change: 5.5, changePercent: 1.22 }, // Artificial split for game balance
-  { symbol: 'YNDX', name: 'Yandex', price: 320.80, change: 2.8, changePercent: 0.88 },
-  { symbol: 'ROSN', name: 'Rosneft', price: 180.40, change: -1.4, changePercent: -0.77 },
-  { symbol: 'AFLT', name: 'Aeroflot', price: 40.10, change: 0.2, changePercent: 0.50 },
-];
+// Utility to check admin credentials
+const checkIsAdmin = (username: string) => {
+  const admins = ['Armen_LEV', 'admin'];
+  return admins.includes(username);
+};
 
 export default function App() {
-  // Auth State
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAuthChecking, setIsAuthChecking] = useState(true);
-
-  // Application State
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-  const [marketStatus, setMarketStatus] = useState<MarketStatus>(MarketStatus.OPEN);
-  const [stocks, setStocks] = useState<Stock[]>(INITIAL_STOCKS);
-  const [selectedStock, setSelectedStock] = useState<Stock>(INITIAL_STOCKS[0]);
+  // --- State ---
+  const [theme, setTheme] = useState<Theme>(Theme.LIGHT);
+  const [isMarketOpen, setIsMarketOpen] = useState(true);
+  const [currentUser, setCurrentUser] = useState<UserState | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showCasino, setShowCasino] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   
-  // Timer State
-  const UPDATE_INTERVAL = 10 * 60 * 1000;
-  const [nextUpdateTimestamp, setNextUpdateTimestamp] = useState<number>(Date.now() + UPDATE_INTERVAL);
+  const [stocks, setStocks] = useState<Stock[]>(INITIAL_STOCKS);
+  const [news, setNews] = useState<NewsItem[]>(INITIAL_NEWS);
+  const [selectedStockSymbol, setSelectedStockSymbol] = useState<string | null>(INITIAL_STOCKS[0].symbol);
+  
+  const [showSettings, setShowSettings] = useState(false);
 
-  // Modals
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  // --- Derived State ---
+  const selectedStock = stocks.find(s => s.symbol === selectedStockSymbol) || null;
+  const isAdmin = currentUser ? checkIsAdmin(currentUser.username) : false;
+  
+  const currentEquity = currentUser ? currentUser.holdings.reduce((acc, item) => {
+    const stock = stocks.find(s => s.symbol === item.symbol);
+    return acc + (item.quantity * (stock?.price || 0));
+  }, 0) : 0;
 
-  // Check login on mount
+  const getHoldingsForStock = (symbol: string) => {
+    return currentUser?.holdings.find(h => h.symbol === symbol)?.quantity || 0;
+  };
+
+  // --- Effects ---
+
+  // Initialize Session
   useEffect(() => {
-    const user = authService.getCurrentUser();
-    if (user) {
-      setCurrentUser(user);
-    }
-    setIsAuthChecking(false);
-    
-    // Request Notification permission
-    if ("Notification" in window && Notification.permission !== "granted") {
-      Notification.requestPermission();
+    const sessionUser = localStorage.getItem('tradeSimCurrentUser');
+    if (sessionUser) {
+      const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
+      if (users[sessionUser]) {
+        // Check ban status on reload
+        if (users[sessionUser].state.isBanned) {
+          localStorage.removeItem('tradeSimCurrentUser');
+          setCurrentUser(null);
+        } else {
+          setCurrentUser(users[sessionUser].state);
+        }
+      }
     }
   }, []);
 
-  // Theme Management
+  // Theme Handling
   useEffect(() => {
-    const root = window.document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
+    if (theme === Theme.DARK) {
+      document.documentElement.classList.add('dark');
     } else {
-      root.classList.remove('dark');
+      document.documentElement.classList.remove('dark');
     }
   }, [theme]);
 
-  // Market Simulation Logic
+  // Market Simulation
   useEffect(() => {
-    if (marketStatus === MarketStatus.CLOSED) return;
+    if (!isMarketOpen) return;
 
     const interval = setInterval(() => {
-      // 1. Update Stocks
       setStocks(currentStocks => 
         currentStocks.map(stock => {
-          const maxPercentChange = 5; 
-          const percentChange = Math.random() * maxPercentChange;
-          const direction = Math.random() > 0.5 ? 1 : -1;
+          // Use specific stock volatility or default
+          const volatility = stock.volatility !== undefined ? stock.volatility : 0.005;
+          const change = stock.price * (Math.random() * volatility * 2 - volatility);
+          const newPrice = Math.max(0.01, stock.price + change);
           
-          const changeFactor = 1 + (direction * (percentChange / 100));
-          const newPrice = Math.max(0.01, stock.price * changeFactor);
-          const priceChange = newPrice - stock.price;
-          
-          const newDailyChange = stock.change + priceChange;
-          const openPrice = newPrice - newDailyChange;
-          const newChangePercent = (newDailyChange / openPrice) * 100;
-
           return {
             ...stock,
             price: newPrice,
-            change: newDailyChange,
-            changePercent: newChangePercent
+            change: newPrice - (stock.price - stock.change),
+            changePercent: ((newPrice - (stock.price / (1 + stock.changePercent/100))) / (stock.price / (1 + stock.changePercent/100))) * 100
           };
         })
       );
-
-      // 2. Reset Timer
-      setNextUpdateTimestamp(Date.now() + UPDATE_INTERVAL);
-
-      // 3. Send Notification
-      if ("Notification" in window && Notification.permission === "granted") {
-         new Notification("TradeSim AI: Рынок обновлен!", {
-           body: "Цены акций изменились. Проверьте свой портфель.",
-           icon: "/favicon.ico"
-         });
-      }
-
-    }, UPDATE_INTERVAL); 
+    }, 300000); // Update every 5 minutes (300,000 ms)
 
     return () => clearInterval(interval);
-  }, [marketStatus]);
+  }, [isMarketOpen]);
 
-  // Update selected stock reference when stocks update
+  // Persist Current User Data
   useEffect(() => {
-    const updated = stocks.find(s => s.symbol === selectedStock.symbol);
-    if (updated) setSelectedStock(updated);
-  }, [stocks, selectedStock.symbol]);
-
-  // Sync Current User Portfolio from DB (in case of updates)
-  const refreshUser = () => {
-    const updated = authService.getCurrentUser();
-    if (updated) setCurrentUser(updated);
-  };
-
-  // Trading Logic
-  const handleTrade = (type: OrderType, quantity: number) => {
-    if (!currentUser) return;
-
-    const cost = selectedStock.price * quantity;
-    let newPortfolio = { ...currentUser.portfolio };
-    let newTransactions = [...currentUser.transactions];
-
-    if (type === OrderType.BUY) {
-      if (newPortfolio.cash < cost) {
-        alert("Недостаточно средств");
-        return;
+    if (currentUser) {
+      const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
+      if (users[currentUser.username]) {
+        users[currentUser.username].state = currentUser;
+        localStorage.setItem('tradeSimUsers', JSON.stringify(users));
       }
-      
-      const currentQty = newPortfolio.holdings[selectedStock.symbol]?.quantity || 0;
-      const currentAvg = newPortfolio.holdings[selectedStock.symbol]?.avgPrice || 0;
-      const newQty = currentQty + quantity;
-      const newAvg = ((currentQty * currentAvg) + cost) / newQty;
-
-      newPortfolio.cash -= cost;
-      newPortfolio.holdings[selectedStock.symbol] = { quantity: newQty, avgPrice: newAvg };
-
-    } else {
-      const currentHolding = newPortfolio.holdings[selectedStock.symbol];
-      if (!currentHolding || currentHolding.quantity < quantity) {
-        alert("Недостаточно активов");
-        return;
-      }
-      
-      const newQty = currentHolding.quantity - quantity;
-      if (newQty <= 0) {
-        delete newPortfolio.holdings[selectedStock.symbol];
-      } else {
-        newPortfolio.holdings[selectedStock.symbol] = { ...currentHolding, quantity: newQty };
-      }
-      newPortfolio.cash += cost;
     }
+  }, [currentUser]);
 
-    const tx: Transaction = {
-      id: Date.now().toString(),
-      type,
-      symbol: selectedStock.symbol,
-      price: selectedStock.price,
-      quantity,
-      timestamp: new Date().toISOString()
-    };
-    newTransactions.unshift(tx);
+  // --- Handlers ---
 
-    // Persist
-    authService.updateUserData(currentUser.username, {
-      portfolio: newPortfolio,
-      transactions: newTransactions
-    });
-
-    refreshUser();
+  const handleLogin = (user: UserState) => {
+    setCurrentUser(user);
+    localStorage.setItem('tradeSimCurrentUser', user.username);
   };
 
-  const handleReset = () => {
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('tradeSimCurrentUser');
+    setShowProfile(false);
+    setShowAdminPanel(false);
+    setShowCasino(false);
+    setShowLeaderboard(false);
+  };
+
+  const handleCasinoUpdate = (amount: number) => {
     if (!currentUser) return;
-    authService.updateUserData(currentUser.username, {
-      portfolio: {
-        cash: 1000,
-        holdings: {},
-        initialValue: 1000
-      },
-      transactions: []
+    
+    setCurrentUser(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        cash: prev.cash + amount,
+        transactions: [...prev.transactions, {
+          id: Date.now().toString(),
+          type: amount >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT',
+          symbol: 'CASINO',
+          price: 1,
+          quantity: Math.abs(amount),
+          timestamp: Date.now()
+        }]
+      };
     });
-    refreshUser();
-    setStocks(INITIAL_STOCKS);
   };
 
-  // Admin Market Actions
-  const handleMarketManipulation = (percentChange: number, symbol: string = 'ALL') => {
-    setStocks(currentStocks => 
-      currentStocks.map(stock => {
-        // Apply only to targeted stock, or all if symbol is 'ALL'
-        if (symbol !== 'ALL' && stock.symbol !== symbol) {
-          return stock;
-        }
+  const handleTransfer = (recipientUsername: string, amount: number): { success: boolean, message: string } => {
+    if (!currentUser) return { success: false, message: 'Не авторизован' };
+    if (currentUser.cash < amount) return { success: false, message: 'Недостаточно средств' };
+    if (recipientUsername === currentUser.username) return { success: false, message: 'Нельзя отправить себе' };
 
-        const multiplier = 1 + (percentChange / 100);
-        const newPrice = Math.max(0.01, stock.price * multiplier);
-        const priceChange = newPrice - stock.price;
+    const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
+    if (!users[recipientUsername]) return { success: false, message: 'Пользователь не найден' };
+
+    setCurrentUser(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        cash: prev.cash - amount,
+        transactions: [...prev.transactions, {
+          id: Date.now().toString(),
+          type: 'TRANSFER_OUT',
+          symbol: recipientUsername,
+          price: 1,
+          quantity: amount,
+          timestamp: Date.now()
+        }]
+      };
+    });
+
+    const recipientUser = users[recipientUsername];
+    recipientUser.state.cash += amount;
+    recipientUser.state.transactions.push({
+      id: Date.now().toString() + '_in',
+      type: 'TRANSFER_IN',
+      symbol: currentUser.username,
+      price: 1,
+      quantity: amount,
+      timestamp: Date.now()
+    });
+    
+    localStorage.setItem('tradeSimUsers', JSON.stringify(users));
+    
+    return { success: true, message: 'Перевод выполнен успешно' };
+  };
+
+  const handleTrade = (type: 'BUY' | 'SELL', quantity: number) => {
+    if (!selectedStock || !currentUser) return;
+    
+    const cost = quantity * selectedStock.price;
+
+    if (type === 'BUY') {
+      if (currentUser.cash < cost) return;
+      
+      setCurrentUser(prev => {
+        if (!prev) return null;
+        const existing = prev.holdings.find(h => h.symbol === selectedStock.symbol);
+        const newHoldings = existing 
+          ? prev.holdings.map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity + quantity } : h)
+          : [...prev.holdings, { symbol: selectedStock.symbol, quantity, avgCost: selectedStock.price }];
         
-        const newDailyChange = stock.change + priceChange;
-        const openPrice = newPrice - newDailyChange;
-        const newChangePercent = openPrice !== 0 ? (newDailyChange / openPrice) * 100 : 0;
+        return {
+          ...prev,
+          cash: prev.cash - cost,
+          holdings: newHoldings,
+          transactions: [...prev.transactions, {
+            id: Date.now().toString(),
+            type: 'BUY',
+            symbol: selectedStock.symbol,
+            price: selectedStock.price,
+            quantity,
+            timestamp: Date.now()
+          }]
+        };
+      });
+    } else {
+      const currentQty = getHoldingsForStock(selectedStock.symbol);
+      if (currentQty < quantity) return;
+
+      setCurrentUser(prev => {
+        if (!prev) return null;
+        const newHoldings = prev.holdings
+          .map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity - quantity } : h)
+          .filter(h => h.quantity > 0);
 
         return {
-          ...stock,
-          price: newPrice,
-          change: newDailyChange,
-          changePercent: newChangePercent
+          ...prev,
+          cash: prev.cash + cost,
+          holdings: newHoldings,
+          transactions: [...prev.transactions, {
+            id: Date.now().toString(),
+            type: 'SELL',
+            symbol: selectedStock.symbol,
+            price: selectedStock.price,
+            quantity,
+            timestamp: Date.now()
+          }]
         };
-      })
-    );
-
-    // Send immediate notification
-    if ("Notification" in window && Notification.permission === "granted") {
-      const isGlobal = symbol === 'ALL';
-      const action = percentChange > 0 ? 'вырос' : 'упал';
-      const title = isGlobal ? "TradeSim AI: Рыночное вмешательство!" : `TradeSim AI: Новости ${symbol}!`;
-      const body = isGlobal 
-        ? `Рынок ${action} на ${Math.abs(percentChange)}%!`
-        : `Акции ${symbol} ${action} на ${Math.abs(percentChange)}%!`;
-        
-      new Notification(title, {
-        body: body,
-        icon: "/favicon.ico"
       });
     }
   };
 
-  const handleLogout = () => {
-    authService.logout();
-    setCurrentUser(null);
-    setIsProfileOpen(false);
+  // Admin Handlers
+  const handleManipulateStock = (symbol: string, percentChange: number) => {
+    setStocks(prev => prev.map(s => {
+      if (s.symbol === symbol) {
+        const newPrice = s.price * (1 + percentChange / 100);
+        return {
+          ...s,
+          price: newPrice,
+          change: newPrice - (s.price - s.change),
+          changePercent: percentChange + s.changePercent
+        };
+      }
+      return s;
+    }));
+  };
+  
+  const handleUpdateVolatility = (symbol: string, volatility: number) => {
+     setStocks(prev => prev.map(s => 
+       s.symbol === symbol ? { ...s, volatility } : s
+     ));
   };
 
-  if (isAuthChecking) return <div className="min-h-screen bg-gray-100 dark:bg-slate-900" />;
+  const handleAddStock = (stock: Stock) => {
+    if (stocks.length >= 15) return;
+    setStocks(prev => [...prev, stock]);
+  };
+
+  const handleRemoveStock = (symbol: string) => {
+    setStocks(prev => prev.filter(s => s.symbol !== symbol));
+    if (selectedStockSymbol === symbol) {
+      setSelectedStockSymbol(null);
+    }
+  };
+
+  const handlePublishNews = (title: string, type: 'INFO' | 'BULLISH' | 'BEARISH') => {
+    const newItem: NewsItem = {
+      id: Date.now().toString(),
+      title,
+      type,
+      timestamp: Date.now()
+    };
+    setNews(prev => [newItem, ...prev]);
+  };
 
   if (!currentUser) {
-    return (
-      <>
-        <AuthScreen onLogin={setCurrentUser} />
-        <div className="hidden" /> 
-      </>
-    );
+    return <Auth onLogin={handleLogin} />;
   }
 
   return (
-    <div className="min-h-screen pb-12">
-      <TopNavigation 
-        portfolio={currentUser.portfolio} 
-        stocks={stocks} 
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenProfile={() => setIsProfileOpen(true)}
-        onOpenAdmin={() => setIsAdminOpen(true)}
-        username={currentUser.username}
-        isAdmin={currentUser.role === 'admin'}
-        nextUpdateTimestamp={nextUpdateTimestamp}
-      />
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 pb-20">
+      {/* Header */}
+      <header className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-100 dark:border-gray-700 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">
+              T
+            </div>
+            <h1 className="text-xl font-bold tracking-tight">TradeSim <span className="text-blue-600 font-light">AI</span></h1>
+          </div>
+          
+          <div className="flex items-center gap-4">
+             {isAdmin && (
+               <button 
+                 onClick={() => setShowAdminPanel(true)}
+                 className="p-2 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full hover:bg-red-200 transition-colors"
+                 title="Админ Панель"
+               >
+                 <ShieldAlert size={20} />
+               </button>
+             )}
 
-      <main className="container mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Market & Chart */}
-        <div className="lg:col-span-8 space-y-6">
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
-             <div className="p-4 border-b border-gray-200 dark:border-slate-700 flex justify-between items-center">
-                <h2 className="text-xl font-bold text-gray-800 dark:text-white">Рынок</h2>
-                <span className={`px-2 py-1 rounded text-xs font-semibold ${marketStatus === MarketStatus.OPEN ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                  {marketStatus === MarketStatus.OPEN ? 'ОТКРЫТ' : 'ЗАКРЫТ'}
-                </span>
+             <button
+               onClick={() => setShowCasino(true)}
+               className="p-2 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-500 rounded-full hover:bg-yellow-100 transition-colors flex items-center gap-2 px-3"
+               title="Казино"
+             >
+                <Dices size={20} />
+                <span className="hidden sm:inline font-bold text-xs uppercase">Casino</span>
+             </button>
+
+             <button
+               onClick={() => setShowLeaderboard(true)}
+               className="p-2 bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-500 rounded-full hover:bg-orange-100 transition-colors flex items-center gap-2 px-3"
+               title="Лидерборд"
+             >
+                <Trophy size={20} />
+             </button>
+
+             <div className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold ${isMarketOpen ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-400'}`}>
+               <span className={`w-2 h-2 rounded-full ${isMarketOpen ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+               {isMarketOpen ? 'MARKET OPEN' : 'MARKET CLOSED'}
+             </div>
+
+             <button 
+               onClick={() => setShowProfile(true)}
+               className="p-2 bg-gray-100 dark:bg-gray-700 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+               title="Профиль"
+             >
+                <UserIcon size={20} />
+             </button>
+             
+             <button 
+                onClick={() => setShowSettings(!showSettings)}
+                className="p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors relative"
+             >
+               <Settings size={20} />
+             </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Settings Dropdown */}
+      {showSettings && (
+        <div className="absolute top-16 right-4 sm:right-8 z-40 w-64 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 p-4 animate-in fade-in slide-in-from-top-2">
+           <div className="space-y-2">
+             <button 
+               onClick={() => setTheme(theme === Theme.LIGHT ? Theme.DARK : Theme.LIGHT)}
+               className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm"
+             >
+               <span className="flex items-center gap-2">
+                 {theme === Theme.LIGHT ? <Moon size={16} /> : <Sun size={16} />} 
+                 {theme === Theme.LIGHT ? 'Тёмная тема' : 'Светлая тема'}
+               </span>
+             </button>
+
+             <button 
+               onClick={() => setIsMarketOpen(!isMarketOpen)}
+               className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm"
+             >
+               <span className="flex items-center gap-2">
+                 {isMarketOpen ? <PauseCircle size={16} /> : <PlayCircle size={16} />}
+                 {isMarketOpen ? 'Пауза' : 'Возобновить'}
+               </span>
+             </button>
+
+             <div className="h-px bg-gray-100 dark:bg-gray-700 my-2"></div>
+
+             <button 
+               onClick={handleLogout}
+               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/20 text-rose-600 transition-colors text-sm"
+             >
+               <LogOut size={16} /> Выйти
+             </button>
+           </div>
+        </div>
+      )}
+
+      {/* Profile Modal */}
+      {showProfile && (
+        <Profile 
+          user={currentUser} 
+          onClose={() => setShowProfile(false)} 
+          onLogout={handleLogout}
+          onTransfer={handleTransfer}
+        />
+      )}
+
+      {/* Admin Panel Modal */}
+      {showAdminPanel && isAdmin && (
+        <AdminPanel 
+          onClose={() => setShowAdminPanel(false)}
+          stocks={stocks}
+          onManipulateStock={handleManipulateStock}
+          onUpdateVolatility={handleUpdateVolatility}
+          onPublishNews={handlePublishNews}
+          onAddStock={handleAddStock}
+          onRemoveStock={handleRemoveStock}
+        />
+      )}
+
+      {/* Casino Modal */}
+      {showCasino && currentUser && (
+        <Casino 
+          onClose={() => setShowCasino(false)}
+          user={currentUser}
+          onUpdateCash={handleCasinoUpdate}
+        />
+      )}
+
+      {/* Leaderboard Modal */}
+      {showLeaderboard && currentUser && (
+        <Leaderboard 
+          onClose={() => setShowLeaderboard(false)}
+          stocks={stocks}
+          currentUser={currentUser}
+        />
+      )}
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <PortfolioSummary 
+          userState={currentUser} 
+          currentEquity={currentEquity} 
+        />
+        
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+           <div className="lg:col-span-2 h-64">
+             <NewsFeed news={news} />
+           </div>
+           <div className="lg:col-span-1 h-64">
+             <PortfolioDistribution 
+                holdings={currentUser.holdings}
+                stocks={stocks}
+                cash={currentUser.cash}
+             />
+           </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Market List */}
+          <div className="lg:col-span-2 space-y-4">
+             <div className="flex justify-between items-center">
+               <h2 className="text-lg font-bold text-gray-900 dark:text-white">Котировки</h2>
+               <span className="text-xs text-gray-500">Симуляция рынка РФ</span>
              </div>
              <StockTable 
                stocks={stocks} 
-               selectedSymbol={selectedStock.symbol} 
-               onSelect={setSelectedStock} 
-               holdings={currentUser.portfolio.holdings} 
+               onSelectStock={(s) => setSelectedStockSymbol(s.symbol)} 
+               selectedStockSymbol={selectedStockSymbol || undefined}
              />
           </div>
 
-          <MarketAnalyst selectedStock={selectedStock} />
-        </div>
-
-        {/* Right Column: Trading */}
-        <div className="lg:col-span-4 space-y-6">
-          <TradingPanel 
-            stock={selectedStock} 
-            maxBuy={currentUser.portfolio.cash / selectedStock.price}
-            maxSell={currentUser.portfolio.holdings[selectedStock.symbol]?.quantity || 0}
-            onTrade={handleTrade}
-            marketStatus={marketStatus}
-          />
-
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 p-4">
-             <h3 className="text-lg font-semibold mb-3 dark:text-white">История операций</h3>
-             <div className="max-h-60 overflow-y-auto space-y-2">
-               {currentUser.transactions.length === 0 && <p className="text-gray-500 dark:text-gray-400 text-sm">Операций пока нет.</p>}
-               {currentUser.transactions.map(t => (
-                 <div key={t.id} className="flex justify-between items-center text-sm p-2 bg-gray-50 dark:bg-slate-700/50 rounded">
-                   <div>
-                     <span className={`font-bold ${t.type === OrderType.BUY ? 'text-green-600' : 'text-red-500'}`}>
-                       {t.type === OrderType.BUY ? 'ПОКУПКА' : 'ПРОДАЖА'}
-                     </span>
-                     <span className="ml-2 font-medium dark:text-gray-200">{t.symbol}</span>
-                   </div>
-                   <div className="text-right">
-                     <div className="dark:text-gray-200">{t.quantity} шт @ {t.price.toFixed(2)}₽</div>
-                     <div className="text-xs text-gray-400">{new Date(t.timestamp).toLocaleTimeString()}</div>
-                   </div>
-                 </div>
-               ))}
-             </div>
+          {/* Trading Panel */}
+          <div className="lg:col-span-1 h-[600px] lg:h-auto lg:sticky lg:top-24">
+            <TradingPanel 
+              selectedStock={selectedStock}
+              maxAffordable={selectedStock ? Math.floor(currentUser.cash / selectedStock.price) : 0}
+              maxSellable={selectedStock ? getHoldingsForStock(selectedStock.symbol) : 0}
+              onTrade={handleTrade}
+              isMarketOpen={isMarketOpen}
+            />
           </div>
         </div>
       </main>
 
-      {isSettingsOpen && (
-        <SettingsModal 
-          isOpen={isSettingsOpen} 
-          onClose={() => setIsSettingsOpen(false)}
-          theme={theme}
-          toggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-          marketStatus={marketStatus}
-          toggleMarket={() => setMarketStatus(s => s === MarketStatus.OPEN ? MarketStatus.CLOSED : MarketStatus.OPEN)}
-          onReset={handleReset}
-        />
-      )}
-
-      {isProfileOpen && (
-        <UserProfile 
-          user={currentUser}
-          stocks={stocks} 
-          isOpen={isProfileOpen}
-          onClose={() => setIsProfileOpen(false)}
-          onUpdate={refreshUser}
-          onLogout={handleLogout}
-        />
-      )}
-
-      {isAdminOpen && currentUser.role === 'admin' && (
-        <AdminPanel 
-          isOpen={isAdminOpen}
-          onClose={() => setIsAdminOpen(false)}
-          stocks={stocks}
-          onMarketManipulate={handleMarketManipulation}
-        />
-      )}
+      {/* Floating AI Assistant */}
+      <AIAnalyst 
+        stocks={stocks} 
+        holdings={currentUser.holdings} 
+        totalEquity={currentEquity + currentUser.cash}
+      />
     </div>
   );
 }

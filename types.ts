@@ -2,46 +2,57 @@ export interface Stock {
   symbol: string;
   name: string;
   price: number;
-  change: number;
-  changePercent: number;
+  change: number; // Value amount
+  changePercent: number; // Percentage
+  volume: number;
+  high: number;
+  low: number;
+  volatility: number; // Volatility factor (e.g., 0.02 for 2%)
 }
 
-export enum OrderType {
-  BUY = 'BUY',
-  SELL = 'SELL'
-}
-
-export enum MarketStatus {
-  OPEN = 'OPEN',
-  CLOSED = 'CLOSED'
+export interface PortfolioItem {
+  symbol: string;
+  quantity: number;
+  avgCost: number;
 }
 
 export interface Transaction {
   id: string;
-  type: OrderType;
-  symbol: string;
-  price: number;
-  quantity: number;
-  timestamp: string; // Changed to string for serialization stability
-  username?: string; // Optional field for global logs to identify who made the trade
+  type: 'BUY' | 'SELL' | 'TRANSFER_OUT' | 'TRANSFER_IN';
+  symbol: string; // For transfers, this might be 'CASH' or the other username
+  price: number; // For transfers, 1
+  quantity: number; // Amount
+  timestamp: number;
 }
 
-export interface PortfolioItem {
-  quantity: number;
-  avgPrice: number;
-}
-
-export interface UserPortfolio {
-  cash: number;
-  holdings: Record<string, PortfolioItem>;
-  initialValue: number;
-}
-
-export interface User {
+export interface UserState {
   username: string;
-  password?: string; // Only used for auth checks, not passed around usually
-  role: 'admin' | 'user'; 
-  isBanned?: boolean; // Added ban status
-  portfolio: UserPortfolio;
+  cash: number;
+  holdings: PortfolioItem[];
   transactions: Transaction[];
+  initialCash: number;
+  isBanned?: boolean; // New field for ban status
+}
+
+export interface MarketState {
+  isOpen: boolean;
+  lastUpdate: number;
+}
+
+export enum Theme {
+  LIGHT = 'light',
+  DARK = 'dark',
+}
+
+export interface AIAnalysisResult {
+  summary: string;
+  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  advice: string;
+}
+
+export interface NewsItem {
+  id: string;
+  title: string;
+  type: 'INFO' | 'BULLISH' | 'BEARISH';
+  timestamp: number;
 }

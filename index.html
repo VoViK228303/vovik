@@ -3,40 +3,82 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TradeSim AI</title>
+    <title>TradeSim AI - Advanced Trading Platform</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script>
       tailwind.config = {
         darkMode: 'class',
         theme: {
           extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
             colors: {
-              trade: {
-                bg: '#0f172a',
-                card: '#1e293b',
-                primary: '#3b82f6',
-                success: '#10b981',
-                danger: '#ef4444',
+              gray: {
+                900: '#111827',
+                800: '#1F2937',
+                700: '#374151',
               }
             }
           }
         }
       }
     </script>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+      }
+      .dark ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      .dark ::-webkit-scrollbar-track {
+        background: #1f2937; 
+      }
+      .dark ::-webkit-scrollbar-thumb {
+        background: #4b5563; 
+        border-radius: 4px;
+      }
+      .dark ::-webkit-scrollbar-thumb:hover {
+        background: #6b7280; 
+      }
+    </style>
   <script type="importmap">
 {
   "imports": {
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "@google/genai": "https://esm.sh/@google/genai@0.0.10",
+    "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
+<!-- Add Babel for in-browser JSX transpilation -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <link rel="stylesheet" href="/index.css">
 </head>
-  <body class="bg-gray-100 dark:bg-slate-900 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+  <body class="bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100 transition-colors duration-200">
     <div id="root"></div>
+    
+    <!-- Error Overlay -->
+    <script>
+      window.addEventListener('error', function(e) {
+        const root = document.getElementById('root');
+        if(root && root.innerHTML === '') {
+          root.innerHTML = `<div style="padding: 20px; color: red; font-family: monospace;">
+            <h1>Startup Error</h1>
+            <p>Please use a local server (e.g., Live Server in VSCode) instead of opening the file directly.</p>
+            <p>Error details: ${e.message}</p>
+          </div>`;
+        }
+      });
+    </script>
+
+    <!-- Entry point for the application -->
+    <script type="text/babel" data-type="module" src="./index.tsx"></script>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

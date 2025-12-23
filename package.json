@@ -1,5 +1,5 @@
 {
-  "name": "armen_lev",
+  "name": "copy-of-copy-of-tradesim-ai",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "^1.34.0",
     "react": "^19.2.3",
+    "@google/genai": "0.0.10",
+    "lucide-react": "0.292.0",
     "react-dom": "^19.2.3"
   },
   "devDependencies": {

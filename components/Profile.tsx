@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { UserState } from '../types.ts';
 import { User, Send, X, AlertCircle, CheckCircle2 } from 'lucide-react';
@@ -6,7 +7,8 @@ interface ProfileProps {
   user: UserState;
   onClose: () => void;
   onLogout: () => void;
-  onTransfer: (recipient: string, amount: number) => { success: boolean; message: string };
+  // Fix: changed return type to Promise to match App.tsx implementation
+  onTransfer: (recipient: string, amount: number) => Promise<{ success: boolean; message: string }>;
 }
 
 export const Profile: React.FC<ProfileProps> = ({ user, onClose, onLogout, onTransfer }) => {
@@ -14,7 +16,8 @@ export const Profile: React.FC<ProfileProps> = ({ user, onClose, onLogout, onTra
   const [amount, setAmount] = useState('');
   const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
-  const handleTransfer = (e: React.FormEvent) => {
+  // Fix: made handleTransfer async to await onTransfer result and fix type mismatch in App.tsx
+  const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     const amountNum = parseFloat(amount);
     
@@ -23,7 +26,7 @@ export const Profile: React.FC<ProfileProps> = ({ user, onClose, onLogout, onTra
       return;
     }
 
-    const result = onTransfer(recipient, amountNum);
+    const result = await onTransfer(recipient, amountNum);
     setStatus({ 
       type: result.success ? 'success' : 'error', 
       message: result.message 

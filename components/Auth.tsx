@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { UserState } from '../types.ts';
 import { INITIAL_CASH } from '../constants.ts';
-import { Lock, User, UserPlus, LogIn } from 'lucide-react';
+import { Lock, User, UserPlus, LogIn, Mail } from 'lucide-react';
 import { supabase } from '../lib/supabase.ts';
 
 interface AuthProps {
@@ -11,18 +11,25 @@ interface AuthProps {
 
 export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState(''); // Supabase prefers email or username + domain
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Helper to get consistent email from username/email input
+  const getEmail = (input: string) => {
+    if (input.includes('@')) return input.toLowerCase();
+    return `${input.toLowerCase().trim()}@tradesim.local`;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    if (!password || (isLogin ? !username : (!username || !email))) {
+    const targetEmail = getEmail(username);
+
+    if (!password || !username) {
       setError('Заполните все поля');
       setLoading(false);
       return;
@@ -30,16 +37,13 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
     try {
       if (isLogin) {
-        // We use email-like login for Supabase auth
-        const loginEmail = username.includes('@') ? username : `${username}@tradesim.local`;
         const { data, error: authError } = await supabase.auth.signInWithPassword({
-          email: loginEmail,
+          email: targetEmail,
           password: password,
         });
 
         if (authError) throw authError;
 
-        // Fetch user profile from public.profiles table
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('*')
@@ -52,7 +56,6 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           throw new Error('АККАУНТ ЗАБЛОКИРОВАН');
         }
 
-        // Fetch holdings
         const { data: holdings } = await supabase
           .from('holdings')
           .select('*')
@@ -63,14 +66,14 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
           cash: profile.cash,
           initialCash: profile.initial_cash,
           holdings: holdings || [],
-          transactions: [], // Transactions could be fetched from a separate table later
+          transactions: [],
           isBanned: profile.is_banned
         });
 
       } else {
         // Sign up
         const { data, error: signUpError } = await supabase.auth.signUp({
-          email: email,
+          email: targetEmail,
           password: password,
           options: {
             data: { username: username }
@@ -78,9 +81,8 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         });
 
         if (signUpError) throw signUpError;
-        if (!data.user) throw new Error('Ошибка регистрации');
+        if (!data.user) throw new Error('Ошибка регистрации. Возможно, никнейм занят.');
 
-        // Create profile in profiles table (Trigger should ideally handle this, but we do it manually for simplicity)
         const { error: profileError } = await supabase
           .from('profiles')
           .insert([
@@ -99,7 +101,8 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         });
       }
     } catch (err: any) {
-      setError(err.message || 'Произошла ошибка');
+      console.error(err);
+      setError(err.message === 'Invalid login credentials' ? 'Неверный логин или пароль' : err.message || 'Ошибка аутентификации');
     } finally {
       setLoading(false);
     }
@@ -108,73 +111,70 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
       <div className="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="bg-blue-600 p-6 text-center">
-          <h1 className="text-2xl font-bold text-white mb-2">TradeSim AI</h1>
-          <p className="text-blue-100 text-sm">{isLogin ? 'Войдите в свой портфель' : 'Создайте новый аккаунт'}</p>
+        <div className="bg-blue-600 p-8 text-center relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-4 opacity-10">
+            <LogIn size={100} />
+          </div>
+          <h1 className="text-3xl font-black text-white mb-2 italic tracking-tighter">TRADESIM AI</h1>
+          <p className="text-blue-100 text-sm font-medium uppercase tracking-widest">{isLogin ? 'Вход в терминал' : 'Регистрация инвестора'}</p>
         </div>
 
         <div className="p-8">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {!isLogin && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  placeholder="email@example.com"
-                />
-              </div>
-            )}
-            
+          <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Никнейм</label>
+              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1.5 ml-1">Никнейм или Email</label>
               <div className="relative">
-                <User className="absolute left-3 top-3 text-gray-400" size={18} />
+                <User className="absolute left-3 top-3.5 text-gray-400" size={18} />
                 <input
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg pl-10 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  placeholder="Username"
+                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl pl-10 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  placeholder="Ваш никнейм"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Пароль</label>
+              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1.5 ml-1">Пароль</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-3 text-gray-400" size={18} />
+                <Lock className="absolute left-3 top-3.5 text-gray-400" size={18} />
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg pl-10 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl pl-10 pr-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   placeholder="••••••••"
                 />
               </div>
             </div>
 
             {error && (
-              <div className="p-3 bg-rose-50 dark:bg-rose-900/20 text-rose-600 text-sm rounded-lg font-medium">
-                {error}
+              <div className="p-4 bg-rose-50 dark:bg-rose-900/20 text-rose-600 text-xs rounded-xl font-bold border border-rose-100 dark:border-rose-900/30 flex items-center gap-2">
+                 <div className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
+                 {error}
               </div>
             )}
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-lg shadow-blue-200 dark:shadow-blue-900/20 transition-all flex items-center justify-center gap-2"
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold shadow-lg shadow-blue-200 dark:shadow-none transition-all active:scale-[0.98] flex items-center justify-center gap-2"
             >
-              {loading ? 'Загрузка...' : isLogin ? <><LogIn size={18} /> Войти</> : <><UserPlus size={18} /> Создать аккаунт</>}
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : isLogin ? (
+                <><LogIn size={18} /> Войти в систему</>
+              ) : (
+                <><UserPlus size={18} /> Создать аккаунт</>
+              )}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
+          <div className="mt-8 text-center">
             <button
               onClick={() => { setIsLogin(!isLogin); setError(''); }}
-              className="text-sm text-gray-500 hover:text-blue-600 font-medium transition-colors"
+              className="text-xs font-bold text-gray-400 hover:text-blue-600 uppercase tracking-widest transition-colors"
             >
               {isLogin ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
             </button>

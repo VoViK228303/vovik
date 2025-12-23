@@ -1,21 +1,15 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Stock, PortfolioItem } from "../types.ts";
 
-const apiKey = process.env.API_KEY;
-
-// Initialize the Gemini AI client
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+// Fix: Direct initialization using process.env.API_KEY as a hard requirement.
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const generateMarketAnalysis = async (
   stocks: Stock[],
   holdings: PortfolioItem[],
   totalEquity: number
 ): Promise<{ summary: string; recommendation: string } | null> => {
-  if (!ai) {
-    console.warn("Gemini API key is not set.");
-    return null;
-  }
-
   const stockSummary = stocks.map(s => 
     `${s.symbol} (${s.price.toFixed(2)} ₽, ${s.changePercent > 0 ? '+' : ''}${s.changePercent.toFixed(2)}%)`
   ).join(', ');
@@ -45,13 +39,22 @@ export const generateMarketAnalysis = async (
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            summary: { type: Type.STRING },
-            recommendation: { type: Type.STRING }
-          }
+            summary: { 
+              type: Type.STRING,
+              description: 'A 2-sentence market overview.'
+            },
+            recommendation: { 
+              type: Type.STRING,
+              description: 'A 1-sentence actionable tip.'
+            }
+          },
+          required: ["summary", "recommendation"],
+          propertyOrdering: ["summary", "recommendation"],
         }
       }
     });
 
+    // Fix: Access response.text directly (it is a property, not a method).
     const text = response.text;
     if (!text) return null;
     return JSON.parse(text);

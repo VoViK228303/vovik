@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Settings, Moon, Sun, PauseCircle, PlayCircle, LogOut, User as UserIcon, ShieldAlert, Dices, Trophy } from 'lucide-react';
 import { Stock, UserState, Theme, NewsItem } from './types.ts';
 import { INITIAL_STOCKS, INITIAL_NEWS } from './constants.ts';
@@ -13,6 +13,7 @@ import { NewsFeed } from './components/NewsFeed.tsx';
 import { PortfolioDistribution } from './components/PortfolioDistribution.tsx';
 import { Casino } from './components/Casino.tsx';
 import { Leaderboard } from './components/Leaderboard.tsx';
+import { supabase } from './lib/supabase.ts';
 
 const checkIsAdmin = (username: string) => {
   const admins = ['Armen_LEV', 'admin'];
@@ -45,19 +46,74 @@ export default function App() {
     return currentUser?.holdings.find(h => h.symbol === symbol)?.quantity || 0;
   };
 
+  // Sync user profile to Supabase
+  const syncUserToDB = useCallback(async (user: UserState) => {
+    const { data: authUser } = await supabase.auth.getUser();
+    if (!authUser.user) return;
+
+    // Update profiles table (cash)
+    await supabase
+      .from('profiles')
+      .update({ cash: user.cash })
+      .eq('id', authUser.user.id);
+
+    // Update holdings table (Syncing holdings is more complex, usually we'd clear and re-insert or upsert)
+    // For simplicity, we assume the backend handles transactions, but here we do a basic sync:
+    for (const holding of user.holdings) {
+      await supabase
+        .from('holdings')
+        .upsert({ 
+          user_id: authUser.user.id, 
+          symbol: holding.symbol, 
+          quantity: holding.quantity, 
+          avg_cost: holding.avgCost 
+        }, { onConflict: 'user_id,symbol' });
+    }
+    
+    // Remove holdings with 0 quantity from DB if any (basic cleanup)
+    const activeSymbols = user.holdings.map(h => h.symbol);
+    if (activeSymbols.length > 0) {
+      await supabase
+        .from('holdings')
+        .delete()
+        .eq('user_id', authUser.user.id)
+        .not('symbol', 'in', `(${activeSymbols.join(',')})`);
+    } else {
+      await supabase
+        .from('holdings')
+        .delete()
+        .eq('user_id', authUser.user.id);
+    }
+  }, []);
+
   useEffect(() => {
-    const sessionUser = localStorage.getItem('tradeSimCurrentUser');
-    if (sessionUser) {
-      const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
-      if (users[sessionUser]) {
-        if (users[sessionUser].state.isBanned) {
-          localStorage.removeItem('tradeSimCurrentUser');
-          setCurrentUser(null);
-        } else {
-          setCurrentUser(users[sessionUser].state);
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+
+        const { data: holdings } = await supabase
+          .from('holdings')
+          .select('*')
+          .eq('user_id', session.user.id);
+
+        if (profile) {
+          setCurrentUser({
+            username: profile.username,
+            cash: profile.cash,
+            initialCash: profile.initial_cash,
+            holdings: holdings || [],
+            transactions: [],
+            isBanned: profile.is_banned
+          });
         }
       }
-    }
+    };
+    checkSession();
   }, []);
 
   useEffect(() => {
@@ -68,9 +124,7 @@ export default function App() {
   // Market Simulation
   useEffect(() => {
     if (!isMarketOpen) return;
-
     const interval = setInterval(() => {
-      // Update Prices
       setStocks(currentStocks => 
         currentStocks.map(stock => {
           const volatility = stock.volatility !== undefined ? stock.volatility : 0.005;
@@ -85,122 +139,99 @@ export default function App() {
         })
       );
     }, 5000);
-
     return () => clearInterval(interval);
   }, [isMarketOpen]);
 
-  useEffect(() => {
-    if (currentUser) {
-      const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
-      if (users[currentUser.username]) {
-        users[currentUser.username].state = currentUser;
-        localStorage.setItem('tradeSimUsers', JSON.stringify(users));
-      }
-    }
-  }, [currentUser]);
-
   const handleLogin = (user: UserState) => {
     setCurrentUser(user);
-    localStorage.setItem('tradeSimCurrentUser', user.username);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setCurrentUser(null);
-    localStorage.removeItem('tradeSimCurrentUser');
     setShowProfile(false);
     setShowAdminPanel(false);
     setShowCasino(false);
     setShowLeaderboard(false);
   };
 
-  const handleCasinoUpdate = (amount: number) => {
+  const handleCasinoUpdate = async (amount: number) => {
     if (!currentUser) return;
-    setCurrentUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        cash: prev.cash + amount,
-        transactions: [...prev.transactions, {
-          id: Date.now().toString(),
-          type: amount >= 0 ? 'TRANSFER_IN' : 'TRANSFER_OUT',
-          symbol: 'CASINO',
-          price: 1,
-          quantity: Math.abs(amount),
-          timestamp: Date.now()
-        }]
-      };
-    });
+    const updatedUser = {
+      ...currentUser,
+      cash: currentUser.cash + amount,
+    };
+    setCurrentUser(updatedUser);
+    await syncUserToDB(updatedUser);
   };
 
-  const handleTransfer = (recipientUsername: string, amount: number): { success: boolean, message: string } => {
+  const handleTransfer = async (recipientUsername: string, amount: number): Promise<{ success: boolean, message: string }> => {
     if (!currentUser) return { success: false, message: 'Не авторизован' };
     if (currentUser.cash < amount) return { success: false, message: 'Недостаточно средств' };
-    if (recipientUsername === currentUser.username) return { success: false, message: 'Нельзя отправить себе' };
 
-    const users = JSON.parse(localStorage.getItem('tradeSimUsers') || '{}');
-    if (!users[recipientUsername]) return { success: false, message: 'Пользователь не найден' };
+    // Real DB Transfer
+    const { data: recipientProfile, error: findError } = await supabase
+      .from('profiles')
+      .select('id, cash')
+      .eq('username', recipientUsername)
+      .single();
 
-    setCurrentUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        cash: prev.cash - amount,
-        transactions: [...prev.transactions, {
-          id: Date.now().toString(),
-          type: 'TRANSFER_OUT',
-          symbol: recipientUsername,
-          price: 1,
-          quantity: amount,
-          timestamp: Date.now()
-        }]
-      };
-    });
+    if (findError || !recipientProfile) return { success: false, message: 'Пользователь не найден' };
 
-    const recipientUser = users[recipientUsername];
-    recipientUser.state.cash += amount;
-    recipientUser.state.transactions.push({
-      id: Date.now().toString() + '_in',
-      type: 'TRANSFER_IN',
-      symbol: currentUser.username,
-      price: 1,
-      quantity: amount,
-      timestamp: Date.now()
-    });
-    localStorage.setItem('tradeSimUsers', JSON.stringify(users));
+    // 1. Deduct from sender
+    const { error: deductError } = await supabase
+      .from('profiles')
+      .update({ cash: currentUser.cash - amount })
+      .eq('username', currentUser.username);
+
+    if (deductError) return { success: false, message: 'Ошибка при списании' };
+
+    // 2. Add to recipient
+    await supabase
+      .from('profiles')
+      .update({ cash: recipientProfile.cash + amount })
+      .eq('id', recipientProfile.id);
+
+    const updatedUser = { ...currentUser, cash: currentUser.cash - amount };
+    setCurrentUser(updatedUser);
+    
     return { success: true, message: 'Перевод выполнен успешно' };
   };
 
-  const handleTrade = (type: 'BUY' | 'SELL', quantity: number) => {
+  const handleTrade = async (type: 'BUY' | 'SELL', quantity: number) => {
     if (!selectedStock || !currentUser) return;
     const cost = quantity * selectedStock.price;
+    let updatedUser: UserState | null = null;
+
     if (type === 'BUY') {
       if (currentUser.cash < cost) return;
-      setCurrentUser(prev => {
-        if (!prev) return null;
-        const existing = prev.holdings.find(h => h.symbol === selectedStock.symbol);
-        const newHoldings = existing 
-          ? prev.holdings.map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity + quantity } : h)
-          : [...prev.holdings, { symbol: selectedStock.symbol, quantity, avgCost: selectedStock.price }];
-        return {
-          ...prev,
-          cash: prev.cash - cost,
-          holdings: newHoldings,
-          transactions: [...prev.transactions, { id: Date.now().toString(), type: 'BUY', symbol: selectedStock.symbol, price: selectedStock.price, quantity, timestamp: Date.now() }]
-        };
-      });
+      const existing = currentUser.holdings.find(h => h.symbol === selectedStock.symbol);
+      const newHoldings = existing 
+        ? currentUser.holdings.map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity + quantity } : h)
+        : [...currentUser.holdings, { symbol: selectedStock.symbol, quantity, avgCost: selectedStock.price }];
+      
+      updatedUser = {
+        ...currentUser,
+        cash: currentUser.cash - cost,
+        holdings: newHoldings
+      };
     } else {
       const currentQty = getHoldingsForStock(selectedStock.symbol);
       if (currentQty < quantity) return;
-      setCurrentUser(prev => {
-        if (!prev) return null;
-        const newHoldings = prev.holdings.map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity - quantity } : h).filter(h => h.quantity > 0);
-        return {
-          ...prev,
-          cash: prev.cash + cost,
-          holdings: newHoldings,
-          transactions: [...prev.transactions, { id: Date.now().toString(), type: 'SELL', symbol: selectedStock.symbol, price: selectedStock.price, quantity, timestamp: Date.now() }]
-        };
-      });
+      const newHoldings = currentUser.holdings
+        .map(h => h.symbol === selectedStock.symbol ? { ...h, quantity: h.quantity - quantity } : h)
+        .filter(h => h.quantity > 0);
+      
+      updatedUser = {
+        ...currentUser,
+        cash: currentUser.cash + cost,
+        holdings: newHoldings
+      };
+    }
+
+    if (updatedUser) {
+      setCurrentUser(updatedUser);
+      await syncUserToDB(updatedUser);
     }
   };
 
